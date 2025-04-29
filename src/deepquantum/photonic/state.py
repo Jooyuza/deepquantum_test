@@ -315,7 +315,8 @@ class BosonicState(nn.Module):
         prange: Union[int, List] = 10,
         npoints: Union[int, List] = 200,
         plot: bool = True,
-        k: int = 0
+        k: int = 0,
+        savefig: str = None
     ):
         """Get the discretized Wigner function of the specified mode.
 
@@ -374,6 +375,8 @@ class BosonicState(nn.Module):
             ax2.set_ylabel('Quadrature p')
             ax2.set_zlabel('W(q,p)')
             plt.tight_layout()
+            if savefig is not None:
+                plt.savefig(savefig)
             plt.show()
         return wigner_vals
 
