@@ -1,10 +1,11 @@
-pytest
+graphix==0.3.1
+jupytext
+pennylane-sf
 perceval-quandela
+pre-commit
+pre-commit-uv
+pytest
+qutip
+ruff
 strawberryfields @ git+https://github.com/XanaduAI/strawberryfields.git@master
 thewalrus @ git+https://github.com/XanaduAI/thewalrus.git@master
-graphix==0.3.1
-qutip
-pennylane-sf
-jupytext
-ruff
-pre-commit

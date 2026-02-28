@@ -2,7 +2,6 @@
 
 ![DeepQuantum logo](docs/source/_static/assets/logo_light_v1.png)
 
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![docs](https://img.shields.io/badge/docs-link-blue.svg)](https://dqapi.turingq.com/)
 [![PyPI](https://img.shields.io/pypi/v/deepquantum.svg?logo=pypi)](https://pypi.org/project/deepquantum/)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/deepquantum)
@@ -42,22 +41,30 @@ The first framework to support algorithm design and mapping for time-domain-mult
 DeepQuantum requires **PyTorch 2**.
 We recommend installing it manually first to ensure compatibility with your system and CUDA version.
 
+0. **(Optional)** Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
+We strongly recommend using `uv` instead of standard `pip` for lightning-fast package installations.
 1. Install [Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/main) or [Anaconda](https://www.anaconda.com/docs/getting-started/main).
 2. Create and activate a conda environment.
 For example, run `conda create -n <ENV_NAME> python=3.12` and `conda activate <ENV_NAME>`.
 3. Install PyTorch following the [official instructions](https://pytorch.org/get-started/locally/).
-For example, run `pip install torch`.
+For example, run `pip install torch` or `uv pip install torch`.
+
+*(Tip: Avoid using `conda install` with `uv`)*
 
 ## 2. Install DeepQuantum
 
 ### For Users (Stable Version)
 
-To install DeepQuantum with `pip`, run
+To install DeepQuantum with `uv` or standard `pip`, run
 
 ```bash
-pip install deepquantum
+uv pip install deepquantum
+
 # Or use a mirror site for faster download
-pip install deepquantum -i https://pypi.tuna.tsinghua.edu.cn/simple
+uv pip install deepquantum -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# Fallback for standard pip
+pip install deepquantum
 ```
 
 ### For Developers (Source Installation)
@@ -65,13 +72,33 @@ pip install deepquantum -i https://pypi.tuna.tsinghua.edu.cn/simple
 If you intend to contribute to DeepQuantum or run unit tests, **we strongly recommend installing from source**.
 
 > **Note on Dependencies**: `strawberryfields` and `thewalrus` on PyPI are outdated and may have compatibility issues with modern environments.
-Our `requirements-dev.txt` points to their latest GitHub main branches to ensure a stable development environment.
+For development, our project is configured to automatically pull their latest GitHub `master` branches.
+
+#### Option A: Using `uv` (Recommended)
+
+Since you have `uv` installed, it will automatically handle the Git branch overrides defined in our `pyproject.toml`.
 
 ```bash
 git clone https://github.com/TuringQ/deepquantum.git
 cd deepquantum
+
+uv pip install -e ".[dev]"
+
+# Or use a mirror site for faster download
+uv pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+#### Option B: Using standard `pip`
+
+If you prefer not to use `uv`, you must use our `requirements-dev.txt` to explicitly enforce the necessary Git overrides.
+
+```bash
+git clone https://github.com/TuringQ/deepquantum.git
+cd deepquantum
+
 pip install -e .
 pip install -r requirements-dev.txt
+
 # Or use a mirror site for faster download
 pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip install -r requirements-dev.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -87,6 +114,7 @@ Below are some minimal examples to help you get started.
 
 ```python
 import deepquantum as dq
+
 cir = dq.QubitCircuit(2)
 cir.h(0)
 cir.cnot(0, 1)
@@ -113,10 +141,10 @@ print(cir.expectation())
 - Photonic quantum circuit with the Fock backend, based on Fock basis state
 
 ```python
-cir = dq.QumodeCircuit(2, [1,1])
-cir.dc([0,1])
+cir = dq.QumodeCircuit(2, [1, 1])
+cir.dc([0, 1])
 cir.ps(0, 0.1)
-cir.bs([0,1], [0.2,0.3])
+cir.bs([0, 1], [0.2, 0.3])
 print(cir())
 print(cir.measure())
 ```
@@ -124,10 +152,10 @@ print(cir.measure())
 - Photonic quantum circuit with the Fock backend, based on Fock state tensor
 
 ```python
-cir = dq.QumodeCircuit(2, [(1, [1,1])], basis=False)
-cir.dc([0,1])
+cir = dq.QumodeCircuit(2, [(1, [1, 1])], basis=False)
+cir.dc([0, 1])
 cir.ps(0, 0.1)
-cir.bs([0,1], [0.2,0.3])
+cir.bs([0, 1], [0.2, 0.3])
 print(cir())
 print(cir.measure())
 ```
@@ -138,7 +166,7 @@ print(cir.measure())
 cir = dq.QumodeCircuit(2, 'vac', cutoff=10, backend='gaussian')
 cir.s(0, 0.1)
 cir.d(1, 0.1)
-cir.bs([0,1], [0.2,0.3])
+cir.bs([0, 1], [0.2, 0.3])
 print(cir())
 print(cir.measure())
 print(cir.photon_number_mean_var(wires=0))
@@ -151,7 +179,7 @@ print(cir.measure_homodyne(wires=1))
 cir = dq.QumodeCircuit(2, 'vac', backend='bosonic')
 cir.cat(0, 0.5, 0.0)
 cir.gkp(1, 0.5, 0.5)
-cir.bs([0,1], [0.2,0.3])
+cir.bs([0, 1], [0.2, 0.3])
 print(cir())
 print(cir.photon_number_mean_var(wires=0))
 print(cir.measure_homodyne(wires=1))
@@ -167,7 +195,7 @@ pattern.e(1, 2)
 pattern.m(1)
 pattern.x(2, domain=1)
 # CNOT
-pattern.n([3,4])
+pattern.n([3, 4])
 pattern.e(2, 3)
 pattern.e(0, 3)
 pattern.e(3, 4)
@@ -196,10 +224,11 @@ print(cir() / pattern().full_state)
 
 ```python
 import torch
+
 # OMP_NUM_THREADS=2 torchrun --nproc_per_node=4 main.py
-backend = 'gloo' # for CPU
+backend = 'gloo'  # for CPU
 # torchrun --nproc_per_node=4 main.py
-backend = 'nccl' # for GPU
+backend = 'nccl'  # for GPU
 rank, world_size, local_rank = dq.setup_distributed(backend)
 if backend == 'nccl':
     device = f'cuda:{local_rank}'
@@ -229,9 +258,9 @@ dq.cleanup_distributed()
 
 ```python
 # OMP_NUM_THREADS=2 torchrun --nproc_per_node=4 main.py
-backend = 'gloo' # for CPU
+backend = 'gloo'  # for CPU
 # torchrun --nproc_per_node=4 main.py
-backend = 'nccl' # for GPU
+backend = 'nccl'  # for GPU
 rank, world_size, local_rank = dq.setup_distributed(backend)
 nmode = 4
 cutoff = 4
@@ -251,6 +280,22 @@ if rank == 0:
     print(result)
 dq.cleanup_distributed()
 ```
+
+# Contributing
+
+We welcome contributions from the community!
+To maintain high code quality and consistent style, we use a modern development workflow.
+
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Jupytext](https://img.shields.io/badge/jupytext-enabled-blue)](https://github.com/mwouts/jupytext)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
+
+Please refer to our **[CONTRIBUTING.md](CONTRIBUTING.md)** for detailed instructions on:
+- **Linting & Formatting**: Our coding standards using Ruff.
+- **Notebook Management**: How we sync `.ipynb` and `.py` files using Jupytext.
+- **Pull Request Process**: How to link issues and submit your changes.
+
+Before your first commit, remember to run `pre-commit install` in your local environment.
 
 # Citation
 
