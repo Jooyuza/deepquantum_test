@@ -764,6 +764,154 @@ class QumodeCircuit(Operation):
                 op_m_tdm.wires = [self._unroll_dict[wire][-1] for wire in op_m.wires]
                 self._measurements_tdm.append(op_m_tdm)
 
+    def tdm_output_wires(self, nstep: int) -> torch.Tensor:
+        """Get output wires for each time step without building the global circuit.
+
+        Args:
+            nstep: The number of time steps.
+
+        Returns:
+            The output wires with shape ``(nstep, nmode)``.
+        """
+        if not self._with_delay:
+            raise ValueError('tdm_output_wires() requires at least one delay loop')
+        if not isinstance(nstep, int) or isinstance(nstep, bool) or nstep < 1:
+            raise ValueError('nstep must be a positive integer')
+        self._prepare_unroll_dict()
+        first = torch.tensor(
+            [self._unroll_dict[wire][-1] for wire in range(self.nmode)],
+            dtype=torch.long,
+        )
+        if nstep == 1:
+            return first.unsqueeze(0)
+        later = torch.arange(
+            self._nmode_tdm,
+            self._nmode_tdm + (nstep - 1) * self.nmode,
+            dtype=torch.long,
+        ).reshape(nstep - 1, self.nmode)
+        return torch.cat([first.unsqueeze(0), later], dim=0)
+
+    def tdm_substate(
+        self,
+        nstep: int,
+        time_steps: int | slice | list[int] | torch.Tensor,
+        wires: int | list[int] | torch.Tensor | None = None,
+        data: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        """Get the Gaussian state of selected TDM outputs.
+
+        Args:
+            nstep: The number of time steps.
+            time_steps: The selected time steps in ascending order.
+            wires: The selected spatial wires. Default: ``None``
+            data: Time-major encoded data with shape ``(nstep * ndata,)`` or
+                ``(batch, nstep * ndata)``. Default: ``None``
+
+        Returns:
+            The covariance matrix and mean vector in time-major order, with shapes
+            ``(batch, 2 * nselected, 2 * nselected)`` and ``(batch, 2 * nselected, 1)``.
+        """
+        assert self.backend == 'gaussian', 'tdm_substate() requires Gaussian backend'
+        assert self._with_delay, 'tdm_substate() requires at least one delay loop'
+        assert isinstance(nstep, int) and not isinstance(nstep, bool) and nstep > 0, 'nstep must be a positive integer'
+        if isinstance(time_steps, slice):
+            time_steps = torch.arange(nstep)[time_steps]
+        else:
+            time_steps = torch.as_tensor(time_steps, dtype=torch.long).reshape(-1)
+        assert time_steps.numel() > 0, 'time_steps must not be empty'
+        assert torch.all((time_steps >= 0) & (time_steps < nstep)), 'time_steps must lie in [0, nstep)'
+        assert time_steps.numel() == 1 or torch.all(time_steps[1:] > time_steps[:-1]), (
+            'time_steps must be unique and ascending'
+        )
+        wires = torch.arange(self.nmode) if wires is None else torch.as_tensor(wires, dtype=torch.long).reshape(-1)
+        assert wires.numel() > 0, 'wires must not be empty'
+        assert torch.all((wires >= 0) & (wires < self.nmode)), 'wires must lie in [0, nmode)'
+        assert torch.unique(wires).numel() == wires.numel(), 'wires must be unique'
+
+        if self.ndata == 0:
+            assert data is None, 'data must be None when the circuit has no encoders'
+            states = [self._tdm_substate_gaussian(nstep, time_steps, wires)]
+        else:
+            assert isinstance(data, torch.Tensor), 'data is required when the circuit has encoders'
+            if data.ndim == 1:
+                data = data.unsqueeze(0)
+            assert data.ndim == 2 and data.shape[1] == nstep * self.ndata, (
+                f'data must have shape ({nstep * self.ndata},) or (batch, {nstep * self.ndata})'
+            )
+            circuit = deepcopy(self)
+            states = [circuit._tdm_substate_gaussian(nstep, time_steps, wires, sample) for sample in data]
+        cov, mean = zip(*states, strict=True)
+        return [torch.stack(cov), torch.stack(mean)]
+
+    def _tdm_substate_gaussian(
+        self,
+        nstep: int,
+        time_steps: torch.Tensor,
+        wires: torch.Tensor,
+        data: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        """Get one encoded Gaussian TDM substate."""
+        self._prepare_unroll_dict()
+        loop_wires = []
+        for values in self._unroll_dict.values():
+            for value in values:
+                if isinstance(value, list):
+                    loop_wires.extend(value)
+        loop_index = {wire: index for index, wire in enumerate(loop_wires)}
+        nloop = len(loop_wires)
+        vac = self.init_state.cov.new_tensor(dqp.hbar / (4 * dqp.kappa**2))
+        cov = torch.eye(2 * nloop, dtype=vac.dtype, device=vac.device) * vac
+        mean = torch.zeros(2 * nloop, 1, dtype=vac.dtype, device=vac.device)
+        selected_steps = set(time_steps.tolist())
+        selected_wires = wires.tolist()
+        nretained = 0
+
+        for step in range(nstep):
+            if data is not None:
+                self.encode(data[step * self.ndata : (step + 1) * self.ndata])
+            old_nmode = nloop + nretained
+            step_nmode = old_nmode + self.nmode
+            old_idx = torch.cat(
+                [torch.arange(old_nmode, device=cov.device), torch.arange(old_nmode, device=cov.device) + step_nmode]
+            )
+            cov_step = torch.eye(2 * step_nmode, dtype=cov.dtype, device=cov.device) * vac
+            cov_step = cov_step.index_put((old_idx[:, None], old_idx), cov)
+            mean_step = torch.zeros(2 * step_nmode, 1, dtype=mean.dtype, device=mean.device)
+            mean_step = mean_step.index_copy(0, old_idx, mean)
+
+            ndelay = np.array([0] * self.nmode)
+            for op in self.operators:
+                if isinstance(op, Barrier):
+                    continue
+                if isinstance(op, Delay):
+                    wire = op.wires[0]
+                    ndelay[wire] += 1
+                    delay_wires = self._unroll_dict[wire][-ndelay[wire] - 1]
+                    wire1 = loop_index[delay_wires[step % op.ntau]]
+                    wire2 = old_nmode + wire
+                    gates = [(op.gates[0], [wire1, wire2])]
+                    gates.extend((gate, [wire1]) for gate in op.gates[1:])
+                else:
+                    gates = [(op, [old_nmode + wire for wire in op.wires])]
+                for gate, gate_wires in gates:
+                    gate_step = copy(gate)
+                    gate_step.nmode = step_nmode
+                    gate_step.wires = gate_wires
+                    cov_step, mean_step = gate_step([cov_step, mean_step])
+
+            keep = list(range(old_nmode))
+            if step in selected_steps:
+                keep.extend(old_nmode + wire for wire in selected_wires)
+                nretained += len(selected_wires)
+            keep = torch.tensor(keep, dtype=torch.long, device=cov.device)
+            keep_xp = torch.cat([keep, keep + step_nmode])
+            cov = cov_step[keep_xp[:, None], keep_xp]
+            mean = mean_step[keep_xp]
+
+        retained = torch.arange(nloop, nloop + nretained, device=cov.device)
+        retained_xp = torch.cat([retained, retained + nloop + nretained])
+        return [cov[retained_xp[:, None], retained_xp], mean[retained_xp]]
+
     def global_circuit(self, nstep: int, use_deepcopy: bool = False) -> 'QumodeCircuit':
         """Get the global circuit given the number of time steps.
 
@@ -1011,14 +1159,21 @@ class QumodeCircuit(Operation):
         """Get the probability of the final state related to the reference state.
 
         Args:
-            final_state: The final Fock basis state.
+            final_state: The final Fock basis state with shape ``(nmode,)``. For Gaussian backend,
+                multiple final states with shape ``(npattern, nmode)`` are also supported.
             refer_state: The initial Fock basis state or the final Gaussian state. Default: ``None``
             unitary: The unitary matrix. Default: ``None``
         """
         if not isinstance(final_state, torch.Tensor):
             final_state = torch.tensor(final_state, dtype=torch.long)
         result_name = 'clicks' if self.backend == 'gaussian' and self.detector == 'click' else 'photons'
-        assert max(final_state) < self.cutoff, f'The number of {result_name} must be less than cutoff'
+        assert final_state.numel() > 0, 'The final state must not be empty'
+        if self.backend == 'gaussian':
+            assert final_state.ndim in (1, 2), 'The final state must be 1D or 2D for Gaussian backend'
+        else:
+            assert final_state.ndim == 1, 'The final state must be 1D'
+        assert torch.all(final_state >= 0), f'The number of {result_name} must be non-negative'
+        assert final_state.max() < self.cutoff, f'The number of {result_name} must be less than cutoff'
         if self.backend == 'fock':
             if refer_state is None:
                 refer_state = self._prepare_init_state(self.init_state.state)
@@ -1084,9 +1239,17 @@ class QumodeCircuit(Operation):
         return prob
 
     def _get_prob_gaussian(self, final_state: Any, state: Any = None) -> torch.Tensor:
-        """Get the batched probabilities of the final state for Gaussian backend."""
+        """Get probabilities of one or multiple final states for Gaussian backend."""
         if not isinstance(final_state, torch.Tensor):
             final_state = torch.tensor(final_state, dtype=torch.long)
+        assert final_state.ndim in (1, 2)
+        is_single = final_state.ndim == 1
+        final_states = final_state.unsqueeze(0) if is_single else final_state
+        if self.detector in ('pnrd', 'threshold') and not is_single:
+            totals = final_states.sum(dim=-1)
+            assert torch.all(totals == totals[0]), (
+                'PNRD and threshold patterns in one batch must have the same total occupation'
+            )
         if state is None:
             cov = self._cov
             mean = self._mean
@@ -1103,9 +1266,14 @@ class QumodeCircuit(Operation):
         batch = cov.shape[0]
         probs = []
         for i in range(batch):
-            prob = self._get_probs_gaussian_helper(final_state, cov=cov[i], mean=mean[i], detector=self.detector)[0]
+            prob = self._get_probs_gaussian_helper(final_states, cov=cov[i], mean=mean[i], detector=self.detector)
             probs.append(prob)
-        return torch.stack(probs).squeeze()
+        probs = torch.stack(probs)
+        if batch == 1:
+            probs = probs[0]
+        if is_single:
+            probs = probs[..., 0]
+        return probs
 
     def _get_probs_gaussian_helper(
         self,
@@ -1191,20 +1359,18 @@ class QumodeCircuit(Operation):
         values = []
         positions = []
         nmode = final_states.shape[-1]
-        size = matrix.shape[-1]
         for clicks, group_positions in groups.items():
             position = torch.tensor(group_positions, dtype=torch.long, device=final_states.device)
-            if len(group_positions) == 1:
-                value = kensingtonian(matrix, final_states[position[0]], num_detectors, gamma).reshape(1)
+            reduced_clicks = tuple(click for click in clicks if click > 0)
+            if not reduced_clicks:
+                value = matrix.new_ones(len(group_positions))
             else:
-                # Reorder the group to share one canonical term-data batch.
                 orders = final_states.index_select(0, position).argsort(dim=-1)
-                indices = torch.cat([orders, orders + nmode], dim=-1)
-                matrices = matrix.expand(len(group_positions), -1, -1)
-                matrices = matrices.gather(1, indices.unsqueeze(-1).expand(-1, -1, size))
-                matrices = matrices.gather(2, indices.unsqueeze(1).expand(-1, size, -1))
-                gammas = None if gamma is None else gamma.expand(len(group_positions), -1).gather(1, indices)
-                canonical_clicks = final_states.new_tensor(clicks)
+                clicked_modes = orders[:, -len(reduced_clicks) :]
+                indices = torch.cat([clicked_modes, clicked_modes + nmode], dim=-1)
+                matrices = matrix[indices.unsqueeze(-1), indices.unsqueeze(-2)]
+                gammas = None if gamma is None else gamma[indices]
+                canonical_clicks = final_states.new_tensor(reduced_clicks)
                 value = kensingtonian(matrices, canonical_clicks, num_detectors, gammas)
             values.append(value)
             positions.append(position)
